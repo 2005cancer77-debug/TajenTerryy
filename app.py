@@ -13,7 +13,7 @@ CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN", "")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET", "")
 
 if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
-    print("[WARN] CHANNEL_ACCESS_TOKEN or CHANNEL_SECRET not set. Set environment variables before deploying.")
+    print("[WARN] CHANNEL_ACCESS_TOKEN or CHANNEL_SECRET not set.")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN) if CHANNEL_ACCESS_TOKEN else None
 handler = WebhookHandler(CHANNEL_SECRET) if CHANNEL_SECRET else None
@@ -21,15 +21,16 @@ handler = WebhookHandler(CHANNEL_SECRET) if CHANNEL_SECRET else None
 app = Flask(__name__)
 
 def load_mapping(path="data/departments.csv"):
-    """Load CSV using utf-8-sig to strip BOM, and print debug for the first few rows."""
+    """讀取 CSV（自動去掉 BOM），並在前幾列印出 debug。"""
     mapping = []
     try:
         with open(path, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
+            print(f"[INFO] CSV headers = {reader.fieldnames}")
             for i, row in enumerate(reader):
                 mapping.append(row)
-                if i < 3:
-                    print(f"[DEBUG] row={row}")
+                if i < 5:
+                    print(f"[DEBUG][LOAD] row{i} = {row}")
         print(f"[INFO] Loaded {len(mapping)} rows from {path}")
     except Exception as e:
         print(f"[ERROR] Failed to read {path}: {e}")
@@ -37,7 +38,6 @@ def load_mapping(path="data/departments.csv"):
 
 MAPPING = load_mapping()
 
-# Funny fallback lines shown when no keyword matched
 FALLBACKS = [
     "我還在練功，試試更精準的關鍵字？像：休學、獎學金、宿舍、校曆。",
     "嗯…這題我還不太懂 😅 可以改用「休學」「加退選」「宿舍」「交通」嗎？",
@@ -51,26 +51,39 @@ FALLBACKS = [
     "你問女朋友好了",
 ]
 
+def row_to_reply(row):
+    unit = (row.get("unit") or "").strip() or "（未填單位）"
+    ext  = (row.get("ext")  or "").strip() or "N/A"
+    url  = (row.get("url")  or "").strip() or "（無）"
+    return f"你可以洽詢（分機：{ext}）。\n網址：{url}"
+
 def find_reply(user_text: str):
     t = (user_text or "").strip().lower()
-    # 1) 關鍵字命中
+    print(f"[DEBUG][INPUT] user_text = {user_text}")
+
+    # 1) 逐列印出 row，便於排查欄位名（BOM）或空白問題
+    for idx, row in enumerate(MAPPING):
+        if idx < 5:
+            print(f"[DEBUG][SCAN] row{idx} = {row}")
+
+    # 2) 關鍵字命中
     for row in MAPPING:
-        kws = [k.strip().lower() for k in (row.get("keywords", "") or "").split("|") if k.strip()]
+        kws_raw = (row.get("keywords", "") or "")
+        kws = [k.strip().lower() for k in kws_raw.split("|") if k.strip()]
         for kw in kws:
             if kw and kw in t:
-                unit = row.get("unit", "").strip() or "（未填單位）"
-                ext = (row.get("ext", "") or "").strip() or "N/A"
-                url = row.get("url", "") or "（無）"
-                return f"你可以洽詢（分機：{ext}）。\n網址：{url}"
-    # 2) 單位名稱命中
+                print(f"[MATCH][KW] '{kw}' -> {row}")
+                return row_to_reply(row)
+
+    # 3) 單位名稱命中
     for row in MAPPING:
         unit_l = (row.get("unit","") or "").strip().lower()
         if unit_l and unit_l in t:
-            unit = row.get("unit", "").strip() or "（未填單位）"
-            ext = (row.get("ext", "") or "").strip() or "N/A"
-            url = row.get("url", "") or "（無）"
-            return f"你可以洽詢（分機：{ext}）。\n網址：{url}"
-    # 找不到
+            print(f"[MATCH][UNIT] '{unit_l}' -> {row}")
+            return row_to_reply(row)
+
+    # 4) 找不到
+    print(f"[NO_MATCH] {user_text}")
     return None
 
 @app.route("/health", methods=["GET"])
@@ -95,7 +108,6 @@ def handle_message(event):
     reply_text = find_reply(user_text)
 
     if reply_text is None:
-        print(f"[NO_MATCH] {user_text}")
         fallback = random.choice(FALLBACKS)
         quick_items = [
             QuickReplyButton(action=MessageAction(label="休學",      text="休學")),
