@@ -55,7 +55,7 @@ def row_to_reply(row):
     unit = (row.get("unit") or "").strip() or "（未填單位）"
     ext  = (row.get("ext")  or "").strip() or "N/A"
     url  = (row.get("url")  or "").strip() or "（無）"
-    return f"你可以洽詢（分機：{ext}）。\n網址：{url}"
+    return f"你可以洽詢【{unit}】（分機：{ext}）。\n網址：{url}"
 
 def find_reply(user_text: str):
     t = (user_text or "").strip().lower()
