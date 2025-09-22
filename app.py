@@ -1,9 +1,13 @@
 import os
 import csv
+import random
 from flask import Flask, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage,
+    QuickReply, QuickReplyButton, MessageAction
+)
 
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN", "")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET", "")
@@ -17,30 +21,51 @@ handler = WebhookHandler(CHANNEL_SECRET) if CHANNEL_SECRET else None
 app = Flask(__name__)
 
 def load_mapping(path="data/departments.csv"):
+    """Load CSV using utf-8-sig to strip BOM, and print debug for the first few rows."""
     mapping = []
     try:
-        with open(path, newline="", encoding="utf-8") as f:
+        with open(path, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
-            for row in reader:
+            for i, row in enumerate(reader):
                 mapping.append(row)
-    except FileNotFoundError:
-        print(f"[WARN] mapping file not found at {path}. Using fallback rules.")
+                if i < 3:
+                    print(f"[DEBUG] row={row}")
+        print(f"[INFO] Loaded {len(mapping)} rows from {path}")
+    except Exception as e:
+        print(f"[ERROR] Failed to read {path}: {e}")
     return mapping
 
 MAPPING = load_mapping()
 
-def find_reply(user_text: str) -> str:
+# Funny fallback lines shown when no keyword matched
+FALLBACKS = [
+    "我還在練功，試試更精準的關鍵字？像：休學、獎學金、宿舍、校曆。",
+    "嗯…這題我還不太懂 😅 可以改用「休學」「加退選」「宿舍」「交通」嗎？",
+    "我找不到對應單位 QQ。可試：教務處、學務處、總務處、圖書館。",
+    "想找誰？丟關鍵字給我吧～例如：借書、場地借用、請假、選課、地圖。",
+]
+
+def find_reply(user_text: str):
     t = (user_text or "").strip().lower()
+    # 1) 關鍵字命中
     for row in MAPPING:
-        kws = [k.strip().lower() for k in (row.get("keywords", "")).split("|") if k.strip()]
+        kws = [k.strip().lower() for k in (row.get("keywords", "") or "").split("|") if k.strip()]
         for kw in kws:
             if kw and kw in t:
-                return f"你可以洽詢【{row.get('unit','')}】（分機：{row.get('ext','')}）。\n網址：{row.get('url','') or '（無）'}"
+                unit = row.get("unit", "").strip() or "（未填單位）"
+                ext = (row.get("ext", "") or "").strip() or "N/A"
+                url = row.get("url", "") or "（無）"
+                return f"你可以洽詢（分機：{ext}）。\n網址：{url}"
+    # 2) 單位名稱命中
     for row in MAPPING:
-        unit = (row.get("unit","") or "").lower()
-        if unit and unit in t:
-            return f"你可以洽詢【{row.get('unit','')}】（分機：{row.get('ext','')}）。\n網址：{row.get('url','') or '（無）'}"
-    return "請輸入關鍵字（例：休學、獎學金、宿舍、加退選）。我會告訴你該找哪個處室與分機。"
+        unit_l = (row.get("unit","") or "").strip().lower()
+        if unit_l and unit_l in t:
+            unit = row.get("unit", "").strip() or "（未填單位）"
+            ext = (row.get("ext", "") or "").strip() or "N/A"
+            url = row.get("url", "") or "（無）"
+            return f"你可以洽詢（分機：{ext}）。\n網址：{url}"
+    # 找不到
+    return None
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -62,6 +87,26 @@ def callback():
 def handle_message(event):
     user_text = event.message.text or ""
     reply_text = find_reply(user_text)
+
+    if reply_text is None:
+        print(f"[NO_MATCH] {user_text}")
+        fallback = random.choice(FALLBACKS)
+        quick_items = [
+            QuickReplyButton(action=MessageAction(label="休學",      text="休學")),
+            QuickReplyButton(action=MessageAction(label="獎學金",    text="獎學金")),
+            QuickReplyButton(action=MessageAction(label="宿舍",      text="宿舍")),
+            QuickReplyButton(action=MessageAction(label="加退選",    text="加退選")),
+            QuickReplyButton(action=MessageAction(label="校曆",      text="校務行事曆")),
+            QuickReplyButton(action=MessageAction(label="交通",      text="交通資訊")),
+            QuickReplyButton(action=MessageAction(label="地圖",      text="校園導覽／地圖")),
+            QuickReplyButton(action=MessageAction(label="學生系統",  text="學生資訊系統")),
+        ]
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=fallback, quick_reply=QuickReply(items=quick_items))
+        )
+        return
+
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
 if __name__ == "__main__":
